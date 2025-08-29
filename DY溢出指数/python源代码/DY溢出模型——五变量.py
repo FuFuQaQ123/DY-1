@@ -130,9 +130,9 @@ pp_df = pd.DataFrame(pp_results, columns=['列名', 'PP 值', '1% 显著性水�
 print(pp_df)
 
 
-            # epsilon = 1e-10
-            # # 2. 数据预处理：计算对数收益率
-            # log_returns = (df[columns_to_log].clip(lower=epsilon) - df[columns_to_log].shift(1).clip(lower=epsilon)).dropna()
+        # epsilon = 1e-10
+        # # 2. 数据预处理：计算对数收益率
+        # log_returns = (df[columns_to_log].clip(lower=epsilon) - df[columns_to_log].shift(1).clip(lower=epsilon)).dropna()
 
 # 同时对时间序列列进行相同的操作，保证索引一致
 time_series = time_series[log_returns.index]
@@ -176,13 +176,16 @@ HQIC（汉南-昆信息准则）：越小越好。
 """
 best_lags = selected_lags.aic # 提取基于 AIC 准则选择的最佳滞后期数。
 results = model.fit(maxlags=best_lags)
+
+print(f"滞后阶数p = {best_lags}") # L1.1_修订  VAR滞后阶数p，通过AIC准则自动计算最佳滞后阶数，P = 6
+
 # print(results.summary())
 """
 拟合完成后，results 对象提供了多种方法和属性，用于分析模型结果。以下是一些常用的方法：
 (1) 查看模型摘要:          print(results.summary())
-(2) 脉冲响应分析（IRF）:   irf = results.irf(10)  # 计算 10 期的脉冲响应
+(2) 脉冲响应分析（IRF）:   irf = results.irf(5)  # 计算 5 期的脉冲响应
                         irf.plot()
-(3) 方差分解（FEVD）      fevd = results.fevd(10)  # 计算 10 期的方差分解,分析每个变量对系统方差的贡献
+(3) 方差分解（FEVD）      fevd = results.fevd(5)  # 计算 5 期的方差分解,分析每个变量对系统方差的贡献
                         fevd.plot() # 会生成方差分解的图表。
 (4) 预测                  forecast = results.forecast(log_returns.values[-best_lags:], steps=5)
 """
@@ -194,7 +197,7 @@ results = model.fit(maxlags=best_lags)
 
 # 动态计算
 # 滚动窗口大小
-rolling_window = 45
+rolling_window = 45  # L1.3_修订  时变溢出的滚动窗口长度为45
 
 # 初始化存储溢出指数的列表
 bdi_to_bdi = []
@@ -243,9 +246,20 @@ for i in range(len(log_returns) - rolling_window):
 
     window_model = model.fit(maxlags=selected_lags.aic)
 
+    # L2.1_修订  VAR稳定性（特征值模数）
+    # 先进行稳定性检验（放在FEVD计算前，如果稳定，则进入FEVD计算）
+    # 计算当前窗口模型的特征值模数
+    companion = window_model.companion_matrix
+    eig_mod = np.abs(np.linalg.eigvals(companion))
+    is_stable = np.all(eig_mod < 1)
+
+    print(f"窗口{i}稳定性：{'稳定' if is_stable else '不稳定'}")
+    # L2.1_修订  VAR稳定性（特征值模数）
+
+
     # 计算 FEVD
-    fevd = window_model.fevd(5)
-    # print(123)
+    fevd = window_model.fevd(5) # L1.2_修订  FEVD的预测水平H，手动设定为5
+
     # 引入GPR后矩阵非正定？
     try:
         # 提取最后一个预测步长的方差分解矩阵（第二维）
