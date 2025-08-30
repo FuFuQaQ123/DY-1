@@ -1,12 +1,17 @@
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.api import VAR
+from statsmodels.tsa.vector_ar.var_model import VAR
 from statsmodels.tsa.stattools import adfuller, kpss
 import matplotlib.pyplot as plt
 from statsmodels.tools.sm_exceptions import InterpolationWarning
 import warnings
 from arch.unitroot import PhillipsPerron
 import seaborn as sns
+from statsmodels.tsa.stattools import grangercausalitytests
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
+from statsmodels.tsa.vector_ar import var_model
 
 # 忽略 InterpolationWarning
 warnings.filterwarnings('ignore', category=InterpolationWarning)
@@ -21,7 +26,7 @@ time_series = df['时间']
 # 测试
 # print(df)
 
-# 对 BDI、BDTI、BCTI、WTI 列进行对数化处理
+# 对 BDI、BDTI、BCTI、WTI、GPR列进行对数化处理
 columns_to_log = ['BDI', 'BDTI', 'BCTI', 'WTI', 'GPR']
 
 
@@ -60,7 +65,7 @@ columns_to_log = ['BDI', 'BDTI', 'BCTI', 'WTI', 'GPR']
 for col in columns_to_log:
     df[col] = np.where(df[col] > 0, np.log(df[col]), np.nan)  # 对数化处理
     df[col] = df[col].replace([np.inf, -np.inf], np.nan)  # 替换 inf 为 NaN
-    df[col] = df[col].fillna(method='ffill')  # 前向填充 NaN
+    df[col] = df[col].ffill()  # 前向填充 NaN
 
 
 df = df.dropna()
@@ -119,7 +124,7 @@ for col in columns_to_log:
     pp_result = pp_test(log_returns[col], col)
     pp_results.append(pp_result)
 
-# 输出 ADF 检验结果
+# 输出 ADF 检验结果  ——————————————L2.1_修订，VAR稳定性检验——————————————
 print("ADF 检验结果:")
 adf_df = pd.DataFrame(adf_results, columns=['列名', 'ADF 值', '1% 显著性水平临界值'])
 print(adf_df)
@@ -193,7 +198,116 @@ print(f"滞后阶数p = {best_lags}") # L1.1_修订  VAR滞后阶数p，通过AI
 # print(best_lags)  # 20
 # print(results.summary())
 
+# ——————————————L2.1.2_修订 进行格林兰因果检验——————————————
+# 1. 定义变量列表（与columns_to_log一致，确保顺序）
+variables = columns_to_log  # ['BDI', 'BDTI', 'BCTI', 'WTI', 'GPR']
 
+# 2. 初始化结果存储列表（记录：原假设、滞后阶数、p值、是否拒绝原假设）
+granger_results = []
+
+# 3. 遍历所有变量对，进行双向格兰杰检验
+for target in variables:  # target：被解释变量（如"BDTI"）
+    for cause in variables:  # cause：解释变量（如"BDI"）
+        if target != cause:  # 排除"变量自身对自身的检验"（无意义）
+            # 准备检验数据：[被解释变量, 解释变量]（grangercausalitytests要求的顺序）
+            test_data = log_returns[[target, cause]].dropna()  # 使用对数收益率数据，并确保无缺失值
+
+            # 执行格兰杰检验：maxlag=best_lags（仅检验最优滞后阶数，避免冗余）
+            # verbose=False：不输出详细中间结果，仅通过返回值提取关键信息
+            result = grangercausalitytests(
+                x=test_data,
+                maxlag=best_lags,
+                addconst=True,  # 回归中加入常数项（默认True，符合VAR模型设定）
+                # verbose=False  新版本已弃用该参数
+            )
+
+            # 提取该滞后阶数的检验结果（result的key为滞后阶数，取best_lags对应的结果）
+            lag_result = result[best_lags]
+
+            # 提取关键统计量：F检验的p值（常用且直观，也可选择卡方检验p值）
+            # lag_result[0]是字典，包含'lrtest'（卡方）、'params_ftest'（F检验）等
+            f_statistic = lag_result[0]['params_ftest'][0]
+            p_value = lag_result[0]['params_ftest'][1]
+
+            # 判断是否拒绝原假设（原假设："cause不是target的格兰杰原因"）
+            alpha = 0.05  # 显著性水平（常用0.05）
+            reject_null = p_value < alpha
+            conclusion = "拒绝原假设（存在格兰杰因果关系）" if reject_null else "接受原假设（无格兰杰因果关系）"
+
+            # 将结果存入列表
+            granger_results.append({
+                "被解释变量(Target)": target,
+                "解释变量(Cause)": cause,
+                "滞后阶数(Lag)": best_lags,
+                "F统计量": round(f_statistic, 4),
+                "p值": round(p_value, 4),
+                "结论": conclusion
+            })
+
+# 4. 整理结果为DataFrame并打印
+granger_df = pd.DataFrame(granger_results)
+print("\n所有变量对的格兰杰因果检验结果：")
+print(granger_df.to_string(index=False))  # 不显示行索引，更清晰
+
+# 5. （可选）筛选显著的因果关系（p<0.05）
+significant_granger = granger_df[granger_df["p值"] < 0.05]
+print(f"\n显著的格兰杰因果关系（p<0.05）共{len(significant_granger)}组：")
+if len(significant_granger) > 0:
+    print(significant_granger.to_string(index=False))
+else:
+    print("无显著的格兰杰因果关系（所有p值≥0.05）")
+# ——————————————L2.1.2_修订 进行格林兰因果检验——————————————
+
+# ——————————————L2.1.3_修订 验证模型的稳定性——————————————
+# model_test = VAR(log_returns)
+# fitted_model = model_test.fit(maxlags=best_lags)
+stability = results.is_stable()
+print('模型是否稳定:')
+print(stability)
+# if stability:
+#     print("模型稳定")
+# else:
+#     print("模型不稳定")
+# ——————————————L2.1.3_修订 验证模型的稳定性——————————————
+
+
+# ——————————————L2.1.4_修订 进行AR根检验——————————————
+# 获取AR根并计算模
+ar_roots = results.roots
+roots_modulus = np.abs(ar_roots)
+print("所有AR根的模：", np.round(roots_modulus, 4))  # 看全部根，而非前5个
+print("最大AR根的模：", np.max(roots_modulus))  # 核心指标，需<1
+is_stable_manual  = np.all(roots_modulus < 1)  # 所有根的模<1则稳定
+print("手动判断稳定性（所有根模<1）：", is_stable_manual)
+print("is_stable() 函数判断稳定性：", results.is_stable())
+
+# 绘制AR根分布图
+plt.figure(figsize=(10, 8))
+# 绘制单位圆（判断稳定性的基准）
+unit_circle = Circle((0, 0), 1, fill=False, color='black', linestyle='--', linewidth=1.5)
+plt.gca().add_patch(unit_circle)
+# 绘制AR根
+plt.scatter(ar_roots.real, ar_roots.imag, color='#DC143C', s=60, alpha=0.8, label='AR-roots')
+# 图形化
+plt.axhline(y=0, color='gray', linestyle='-', alpha=0.5)
+plt.axvline(x=0, color='gray', linestyle='-', alpha=0.5)
+plt.xlim(-2.5, 2.5)  # 扩大x轴范围，便于观察不稳定的根
+plt.ylim(-2.5, 2.5)
+plt.xlabel('Real Part', fontsize=12) # 实部
+plt.ylabel('Imaginary Part', fontsize=12) # 虚部
+plt.title(f'VAR model AR-roots   p={best_lags}', fontsize=14, pad=20)
+plt.legend(fontsize=10)
+plt.grid(alpha=0.3)
+plt.axis('equal')  # 等比例坐标轴，确保单位圆为正圆
+plt.tight_layout()  # 自动调整布局，避免标签被截断
+plt.show()
+
+# 输出稳定性结果
+print(f"模型稳定性：{'稳定' if is_stable_manual else '不稳定'}")
+print(f"最大AR根的模：{np.max(roots_modulus):.4f}（需<1才稳定）")
+print(f"所有AR根的模（前5个）：{np.round(roots_modulus[:5], 4)}")  # 显示前5个根的模
+print("="*50)
+# ——————————————L2.1.4_修订 进行AR根检验——————————————
 
 # 动态计算
 # 滚动窗口大小
@@ -245,17 +359,6 @@ for i in range(len(log_returns) - rolling_window):
     model = VAR(window_data)
 
     window_model = model.fit(maxlags=selected_lags.aic)
-
-    # L2.1_修订  VAR稳定性（特征值模数）
-    # 先进行稳定性检验（放在FEVD计算前，如果稳定，则进入FEVD计算）
-    # 计算当前窗口模型的特征值模数
-    companion = window_model.companion_matrix
-    eig_mod = np.abs(np.linalg.eigvals(companion))
-    is_stable = np.all(eig_mod < 1)
-
-    print(f"窗口{i}稳定性：{'稳定' if is_stable else '不稳定'}")
-    # L2.1_修订  VAR稳定性（特征值模数）
-
 
     # 计算 FEVD
     fevd = window_model.fevd(5) # L1.2_修订  FEVD的预测水平H，手动设定为5
